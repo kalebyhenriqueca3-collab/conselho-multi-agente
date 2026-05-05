@@ -1,11 +1,10 @@
 """
-🧠 Conselho Multi-Agente v4 — controle total
-================================================
-Você escolhe pra cada agente:
-  - Se está ativo
-  - Qual modelo específico
-  - Qual nível de thinking/effort
-E vê o custo estimado ANTES de gastar.
+🧠 Conselho Multi-Agente v5 — debate oculto, resposta final em destaque
+==========================================================================
+Correções da v4:
+1. Grok Multi-Agent agora usa Responses API (não Chat Completions)
+2. Claude usa streaming (necessário pra requests longas com effort alto)
+3. UI: resposta final em destaque, debate fica oculto atrás de expander
 """
 
 import streamlit as st
@@ -22,7 +21,7 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-st.set_page_config(page_title="Conselho Multi-Agente v4", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="Conselho Multi-Agente v5", page_icon="🧠", layout="wide")
 
 st.markdown("""
 <style>
@@ -34,14 +33,18 @@ st.markdown("""
     .main-header h1 { margin: 0; font-size: 2.2rem; }
     .main-header p { margin: 0.5rem 0 0 0; opacity: 0.9; }
     .captain-card {
-        background: linear-gradient(135deg, rgba(102,126,234,0.15) 0%, rgba(118,75,162,0.15) 100%);
-        border: 2px solid rgba(102,126,234,0.4);
-        padding: 2rem; border-radius: 16px; margin-top: 1rem;
-        box-shadow: 0 10px 40px rgba(102,126,234,0.2);
+        background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.18) 100%);
+        border: 2px solid rgba(102,126,234,0.5);
+        padding: 2.5rem; border-radius: 20px; margin: 1rem 0;
+        box-shadow: 0 15px 50px rgba(102,126,234,0.25);
     }
+    .captain-card h2 { margin-top: 0; }
     .cost-card {
         padding: 1rem; border-radius: 12px; margin: 1rem 0;
-        background: rgba(255,193,7,0.1); border: 1px solid rgba(255,193,7,0.3);
+    }
+    .stage-pill {
+        display: inline-block; padding: 4px 12px; border-radius: 20px;
+        font-size: 0.85em; margin-right: 8px;
     }
     footer { visibility: hidden; } #MainMenu { visibility: hidden; }
 </style>
@@ -49,31 +52,31 @@ st.markdown("""
 
 
 # ============================================================
-# CATÁLOGO DE MODELOS / PRICING (USD por 1M tokens, aprox.)
+# CATÁLOGO DE MODELOS / PRICING
 # ============================================================
 
 CLAUDE_MODELS = {
-    "claude-opus-4-7":  {"label": "Claude Opus 4.7 (top)",     "in":  5.0, "out": 25.0},
-    "claude-opus-4-6":  {"label": "Claude Opus 4.6",            "in":  5.0, "out": 25.0},
-    "claude-sonnet-4-6":{"label": "Claude Sonnet 4.6 (barato)", "in":  3.0, "out": 15.0},
+    "claude-opus-4-7":   {"label": "Claude Opus 4.7 (top)",      "in":  5.0, "out": 25.0},
+    "claude-opus-4-6":   {"label": "Claude Opus 4.6",             "in":  5.0, "out": 25.0},
+    "claude-sonnet-4-6": {"label": "Claude Sonnet 4.6 (barato)",  "in":  3.0, "out": 15.0},
 }
 
 GPT_MODELS = {
-    "gpt-5.5":    {"label": "GPT-5.5 (top)",     "in": 1.75, "out": 14.0},
-    "gpt-5.4":    {"label": "GPT-5.4",           "in": 1.50, "out": 12.0},
-    "gpt-5.2":    {"label": "GPT-5.2",           "in": 1.50, "out": 12.0},
-    "gpt-4o":     {"label": "GPT-4o (sem thinking)", "in": 2.50, "out": 10.0},
+    "gpt-5.5":    {"label": "GPT-5.5 (top)",         "in": 1.75, "out": 14.0},
+    "gpt-5.4":    {"label": "GPT-5.4",                "in": 1.50, "out": 12.0},
+    "gpt-5.2":    {"label": "GPT-5.2",                "in": 1.50, "out": 12.0},
+    "gpt-4o":     {"label": "GPT-4o (sem thinking)",  "in": 2.50, "out": 10.0},
 }
 
 GROK_MODELS = {
-    "grok-4.20-multi-agent": {"label": "Grok 4.2 Multi-Agent (top)", "in": 2.0, "out": 6.0},
-    "grok-4.20-beta-0309-reasoning": {"label": "Grok 4.2 Reasoning",  "in": 1.5, "out": 5.0},
-    "grok-4-fast":           {"label": "Grok 4 Fast (barato)",        "in": 0.5, "out": 2.0},
+    "grok-4.20-multi-agent":         {"label": "Grok 4.2 Multi-Agent (top)", "in": 2.0, "out": 6.0, "api": "responses"},
+    "grok-4.20-beta-0309-reasoning": {"label": "Grok 4.2 Reasoning",          "in": 1.5, "out": 5.0, "api": "chat"},
+    "grok-4-fast":                   {"label": "Grok 4 Fast (barato)",        "in": 0.5, "out": 2.0, "api": "chat"},
 }
 
 GEMINI_MODELS = {
-    "gemini-3.1-pro-preview": {"label": "Gemini 3.1 Pro (top, Deep Think Mini)", "in": 2.0, "out": 12.0},
-    "gemini-3-pro":           {"label": "Gemini 3 Pro",                          "in": 1.5, "out": 10.0},
+    "gemini-3.1-pro-preview": {"label": "Gemini 3.1 Pro (top, Deep Think Mini)", "in": 2.0,  "out": 12.0},
+    "gemini-3-pro":           {"label": "Gemini 3 Pro",                          "in": 1.5,  "out": 10.0},
     "gemini-2.5-pro":         {"label": "Gemini 2.5 Pro",                        "in": 1.25, "out": 10.0},
 }
 
@@ -82,37 +85,28 @@ KIMI_MODELS = {
     "kimi-k2.5": {"label": "Kimi K2.5",       "in": 0.50, "out": 2.50},
 }
 
-# Multiplicador de tokens estimados por effort (impacta output tokens)
 EFFORT_MULTIPLIERS = {
-    "none":   0.5,
-    "low":    1.0,
-    "medium": 2.0,
-    "high":   4.0,
-    "xhigh":  7.0,
-    "max":   10.0,
+    "none": 0.5, "low": 1.0, "medium": 2.0, "high": 4.0, "xhigh": 7.0, "max": 10.0,
 }
 
 
 # ============================================================
-# SIDEBAR — controle total
+# SIDEBAR
 # ============================================================
 
 with st.sidebar:
     st.header("⚙️ Configuração")
 
-    # ─── Presets rápidos ───
     st.subheader("⚡ Presets rápidos")
     preset_cols = st.columns(3)
-    if preset_cols[0].button("🪙 Econômico", use_container_width=True, help="Modelos baratos, effort low"):
+    if preset_cols[0].button("🪙 Econômico", use_container_width=True):
         st.session_state["preset"] = "economy"
-    if preset_cols[1].button("⚖️ Balanceado", use_container_width=True, help="Modelos top, effort medium"):
+    if preset_cols[1].button("⚖️ Balanceado", use_container_width=True):
         st.session_state["preset"] = "balanced"
-    if preset_cols[2].button("🚀 Top tier", use_container_width=True, help="Tudo no MAX"):
+    if preset_cols[2].button("🚀 Top tier", use_container_width=True):
         st.session_state["preset"] = "top"
-
     preset = st.session_state.get("preset", None)
 
-    # Define defaults por preset
     def preset_val(economy, balanced, top, default):
         if preset == "economy":  return economy
         if preset == "balanced": return balanced
@@ -121,7 +115,6 @@ with st.sidebar:
 
     st.divider()
 
-    # ─── API Keys ───
     with st.expander("🔑 API Keys", expanded=not bool(os.getenv("ANTHROPIC_API_KEY"))):
         anthropic_key = st.text_input("Anthropic", type="password", value=os.getenv("ANTHROPIC_API_KEY", ""))
         openai_key = st.text_input("OpenAI", type="password", value=os.getenv("OPENAI_API_KEY", ""))
@@ -132,123 +125,70 @@ with st.sidebar:
     st.divider()
     st.subheader("🤖 Agentes")
 
-    # ─── Harper (Grok) ───
     with st.expander("🔍 Harper · Grok", expanded=True):
         enable_harper = st.checkbox("Ativar", value=True, key="en_harper")
-        harper_model = st.selectbox(
-            "Modelo",
-            list(GROK_MODELS.keys()),
-            index=preset_val(2, 0, 0, 0),
-            format_func=lambda k: GROK_MODELS[k]["label"],
-            key="m_harper"
-        )
-        # Grok não tem effort selectable — o reasoning model já vem com seu próprio thinking
-        st.caption("ℹ️ Grok reasoning é embutido no modelo")
+        harper_model = st.selectbox("Modelo", list(GROK_MODELS.keys()),
+            index=preset_val(2, 1, 0, 1),  # Top usa multi-agent, Balanceado usa reasoning
+            format_func=lambda k: GROK_MODELS[k]["label"], key="m_harper")
+        if GROK_MODELS[harper_model]["api"] == "responses":
+            st.caption("ℹ️ Multi-Agent usa Responses API (4 cabeças internas)")
+        else:
+            st.caption("ℹ️ Reasoning embutido no modelo")
 
-    # ─── Benjamin (Claude principal) ───
     with st.expander("🧠 Benjamin · Claude (lógica)", expanded=True):
         enable_benjamin = st.checkbox("Ativar", value=True, key="en_benjamin")
-        benjamin_model = st.selectbox(
-            "Modelo",
-            list(CLAUDE_MODELS.keys()),
+        benjamin_model = st.selectbox("Modelo", list(CLAUDE_MODELS.keys()),
             index=preset_val(2, 0, 0, 0),
-            format_func=lambda k: CLAUDE_MODELS[k]["label"],
-            key="m_benjamin"
-        )
-        benjamin_effort = st.select_slider(
-            "Effort",
+            format_func=lambda k: CLAUDE_MODELS[k]["label"], key="m_benjamin")
+        benjamin_effort = st.select_slider("Effort",
             options=["low", "medium", "high", "xhigh", "max"],
-            value=preset_val("low", "medium", "max", "high"),
-            key="e_benjamin"
-        )
+            value=preset_val("low", "medium", "max", "high"), key="e_benjamin")
 
-    # ─── Aria (Claude alt) ───
     with st.expander("⚖️ Aria · Claude (nuance)"):
         enable_aria = st.checkbox("Ativar", value=False, key="en_aria")
-        aria_model = st.selectbox(
-            "Modelo",
-            list(CLAUDE_MODELS.keys()),
-            index=1,
-            format_func=lambda k: CLAUDE_MODELS[k]["label"],
-            key="m_aria"
-        )
-        aria_effort = st.select_slider(
-            "Effort",
+        aria_model = st.selectbox("Modelo", list(CLAUDE_MODELS.keys()), index=1,
+            format_func=lambda k: CLAUDE_MODELS[k]["label"], key="m_aria")
+        aria_effort = st.select_slider("Effort",
             options=["low", "medium", "high", "xhigh", "max"],
-            value=preset_val("low", "medium", "max", "high"),
-            key="e_aria"
-        )
+            value=preset_val("low", "medium", "max", "high"), key="e_aria")
 
-    # ─── Lucas (GPT) ───
     with st.expander("🎨 Lucas · GPT (criatividade)", expanded=True):
         enable_lucas = st.checkbox("Ativar", value=True, key="en_lucas")
-        lucas_model = st.selectbox(
-            "Modelo",
-            list(GPT_MODELS.keys()),
+        lucas_model = st.selectbox("Modelo", list(GPT_MODELS.keys()),
             index=preset_val(3, 0, 0, 0),
-            format_func=lambda k: GPT_MODELS[k]["label"],
-            key="m_lucas"
-        )
+            format_func=lambda k: GPT_MODELS[k]["label"], key="m_lucas")
         if lucas_model != "gpt-4o":
-            lucas_effort = st.select_slider(
-                "Reasoning effort",
+            lucas_effort = st.select_slider("Reasoning effort",
                 options=["none", "low", "medium", "high", "xhigh"],
-                value=preset_val("low", "medium", "xhigh", "high"),
-                key="e_lucas"
-            )
+                value=preset_val("low", "medium", "xhigh", "high"), key="e_lucas")
         else:
             lucas_effort = "none"
             st.caption("ℹ️ GPT-4o não tem reasoning")
 
-    # ─── Sage (Gemini) ───
-    with st.expander("📚 Sage · Gemini (contexto longo)"):
+    with st.expander("📚 Sage · Gemini"):
         enable_sage = st.checkbox("Ativar", value=False, key="en_sage")
-        sage_model = st.selectbox(
-            "Modelo",
-            list(GEMINI_MODELS.keys()),
-            index=0,
-            format_func=lambda k: GEMINI_MODELS[k]["label"],
-            key="m_sage"
-        )
-        sage_thinking = st.select_slider(
-            "Thinking level",
+        sage_model = st.selectbox("Modelo", list(GEMINI_MODELS.keys()), index=0,
+            format_func=lambda k: GEMINI_MODELS[k]["label"], key="m_sage")
+        sage_thinking = st.select_slider("Thinking level",
             options=["low", "medium", "high"],
-            value=preset_val("low", "medium", "high", "medium"),
-            key="t_sage"
-        )
+            value=preset_val("low", "medium", "high", "medium"), key="t_sage")
 
-    # ─── Kai (Kimi) ───
-    with st.expander("⚡ Kai · Kimi (execução técnica)"):
+    with st.expander("⚡ Kai · Kimi"):
         enable_kai = st.checkbox("Ativar", value=False, key="en_kai")
-        kai_model = st.selectbox(
-            "Modelo",
-            list(KIMI_MODELS.keys()),
-            index=0,
-            format_func=lambda k: KIMI_MODELS[k]["label"],
-            key="m_kai"
-        )
+        kai_model = st.selectbox("Modelo", list(KIMI_MODELS.keys()), index=0,
+            format_func=lambda k: KIMI_MODELS[k]["label"], key="m_kai")
         kai_thinking = st.toggle("Thinking ON", value=True, key="t_kai")
 
     st.divider()
-    st.subheader("🎯 Captain (sintetizador)")
-    captain_model = st.selectbox(
-        "Modelo",
-        list(CLAUDE_MODELS.keys()),
+    st.subheader("🎯 Captain")
+    captain_model = st.selectbox("Modelo", list(CLAUDE_MODELS.keys()),
         index=preset_val(2, 1, 0, 1),
-        format_func=lambda k: CLAUDE_MODELS[k]["label"],
-        key="m_captain"
-    )
-    captain_effort = st.select_slider(
-        "Effort",
+        format_func=lambda k: CLAUDE_MODELS[k]["label"], key="m_captain")
+    captain_effort = st.select_slider("Effort",
         options=["low", "medium", "high", "xhigh", "max"],
-        value=preset_val("low", "medium", "max", "high"),
-        key="e_captain"
-    )
+        value=preset_val("low", "medium", "max", "high"), key="e_captain")
 
 
-# ============================================================
-# CLIENTS
-# ============================================================
 def get_clients():
     clients = {
         "anthropic": AsyncAnthropic(api_key=anthropic_key) if anthropic_key else None,
@@ -262,29 +202,52 @@ def get_clients():
     return clients
 
 
+def extract_responses_text(resp):
+    """Extrai texto da Responses API (OpenAI/xAI compatível)."""
+    text = getattr(resp, "output_text", "") or ""
+    if not text and hasattr(resp, "output"):
+        for item in resp.output:
+            if getattr(item, "type", None) == "message":
+                for c in getattr(item, "content", []):
+                    if getattr(c, "type", None) == "output_text":
+                        text += c.text
+    return text
+
+
 # ============================================================
-# AGENTES
+# AGENTES — fixados pra usar a API correta
 # ============================================================
 
 async def agent_harper(prompt, clients):
-    resp = await clients["grok"].chat.completions.create(
-        model=harper_model,
-        messages=[
-            {"role": "system", "content": (
-                "Você é Harper, especialista em pesquisa factual. "
-                "Traga dados verificáveis, números, fontes. Responda em pt-BR."
-            )},
-            {"role": "user", "content": prompt}
-        ],
-    )
-    return {
-        "text": resp.choices[0].message.content,
-        "thinking": getattr(resp.choices[0].message, "reasoning_content", None)
-    }
+    """🔍 Grok — Multi-Agent via Responses API; outros via Chat Completions."""
+    system_msg = ("Você é Harper, especialista em pesquisa factual. "
+                  "Traga dados verificáveis, números, fontes. Responda em pt-BR.")
+
+    if GROK_MODELS[harper_model]["api"] == "responses":
+        resp = await clients["grok"].responses.create(
+            model=harper_model,
+            input=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt}
+            ],
+        )
+        return {"text": extract_responses_text(resp), "thinking": None}
+    else:
+        resp = await clients["grok"].chat.completions.create(
+            model=harper_model,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt}
+            ],
+        )
+        return {
+            "text": resp.choices[0].message.content,
+            "thinking": getattr(resp.choices[0].message, "reasoning_content", None)
+        }
 
 
-async def _claude_call(model, effort, system, prompt, client):
-    """Claude com adaptive thinking + effort configurável."""
+async def _claude_call_streaming(model, effort, system, prompt, client):
+    """Claude com streaming — necessário pra requests longas (effort alto)."""
     kwargs = {
         "model": model,
         "max_tokens": 64000 if effort in ("xhigh", "max") else 32000,
@@ -292,26 +255,25 @@ async def _claude_call(model, effort, system, prompt, client):
         "messages": [{"role": "user", "content": prompt}],
     }
     if model == "claude-opus-4-7":
-        # 4.7 só aceita adaptive
         kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
         kwargs["output_config"] = {"effort": effort}
-    elif model in ("claude-opus-4-6", "claude-sonnet-4-6"):
-        # 4.6 aceita ambos — usamos adaptive (recomendado)
+    else:
         kwargs["thinking"] = {"type": "adaptive"}
         kwargs["output_config"] = {"effort": effort}
 
-    resp = await client.messages.create(**kwargs)
     text, thinking = "", ""
-    for block in resp.content:
-        if block.type == "thinking":
-            thinking = block.thinking or ""
-        elif block.type == "text":
-            text = block.text
+    async with client.messages.stream(**kwargs) as stream:
+        final = await stream.get_final_message()
+        for block in final.content:
+            if block.type == "thinking":
+                thinking = (block.thinking or "") if hasattr(block, "thinking") else ""
+            elif block.type == "text":
+                text = block.text
     return {"text": text, "thinking": thinking}
 
 
 async def agent_benjamin(prompt, clients):
-    return await _claude_call(
+    return await _claude_call_streaming(
         benjamin_model, benjamin_effort,
         ("Você é Benjamin, especialista em raciocínio lógico estrutural. "
          "Decomponha em premissas, identifique falhas, construa argumentos rigorosos. "
@@ -321,17 +283,16 @@ async def agent_benjamin(prompt, clients):
 
 
 async def agent_aria(prompt, clients):
-    return await _claude_call(
+    return await _claude_call_streaming(
         aria_model, aria_effort,
         ("Você é Aria, especialista em nuance e tradeoffs. "
-         "Pondere prós e contras, identifique tensões entre objetivos, considerações "
-         "éticas e de longo prazo. Responda em pt-BR."),
+         "Pondere prós e contras, tensões entre objetivos, considerações éticas. "
+         "Responda em pt-BR."),
         prompt, clients["anthropic"]
     )
 
 
 async def agent_lucas(prompt, clients):
-    """GPT-5.x via Responses API com effort. GPT-4o via Chat Completions."""
     if lucas_model == "gpt-4o":
         resp = await clients["openai"].chat.completions.create(
             model="gpt-4o",
@@ -355,14 +316,7 @@ async def agent_lucas(prompt, clients):
             {"role": "user", "content": prompt}
         ],
     )
-    text = getattr(resp, "output_text", "") or ""
-    if not text and hasattr(resp, "output"):
-        for item in resp.output:
-            if getattr(item, "type", None) == "message":
-                for c in getattr(item, "content", []):
-                    if getattr(c, "type", None) == "output_text":
-                        text += c.text
-    return {"text": text, "thinking": None}
+    return {"text": extract_responses_text(resp), "thinking": None}
 
 
 async def agent_sage(prompt, clients):
@@ -371,9 +325,9 @@ async def agent_sage(prompt, clients):
         "Leituras holísticas, padrões não-evidentes. Responda em pt-BR.\n\n"
         f"Pergunta: {prompt}"
     )
-    config = gemini_types.GenerateContentConfig(
-        thinking_config=gemini_types.ThinkingConfig(thinking_level=sage_thinking),
-    ) if sage_model.startswith("gemini-3") else None
+    config = (gemini_types.GenerateContentConfig(
+        thinking_config=gemini_types.ThinkingConfig(thinking_level=sage_thinking)
+    ) if sage_model.startswith("gemini-3") else None)
 
     resp = await asyncio.to_thread(
         clients["gemini"].models.generate_content,
@@ -409,12 +363,24 @@ async def agent_kai(prompt, clients):
 # ============================================================
 
 ALL_AGENTS = [
-    (lambda: enable_harper,   "Harper",   agent_harper,   "🔍", lambda: GROK_MODELS[harper_model]["label"],     "#00d4ff", lambda: GROK_MODELS[harper_model],    None),
-    (lambda: enable_benjamin, "Benjamin", agent_benjamin, "🧠", lambda: f"{CLAUDE_MODELS[benjamin_model]['label']} · {benjamin_effort}", "#ff6b9d", lambda: CLAUDE_MODELS[benjamin_model], lambda: benjamin_effort),
-    (lambda: enable_aria,     "Aria",     agent_aria,     "⚖️", lambda: f"{CLAUDE_MODELS[aria_model]['label']} · {aria_effort}",         "#ff9d6b", lambda: CLAUDE_MODELS[aria_model],     lambda: aria_effort),
-    (lambda: enable_lucas,    "Lucas",    agent_lucas,    "🎨", lambda: f"{GPT_MODELS[lucas_model]['label']} · {lucas_effort}",          "#ffd93d", lambda: GPT_MODELS[lucas_model],       lambda: lucas_effort),
-    (lambda: enable_sage,     "Sage",     agent_sage,     "📚", lambda: f"{GEMINI_MODELS[sage_model]['label']} · {sage_thinking}",       "#9d4edd", lambda: GEMINI_MODELS[sage_model],     lambda: sage_thinking),
-    (lambda: enable_kai,      "Kai",      agent_kai,      "⚡", lambda: KIMI_MODELS[kai_model]["label"],         "#06ffa5", lambda: KIMI_MODELS[kai_model],        None),
+    (lambda: enable_harper,   "Harper",   agent_harper,   "🔍",
+        lambda: GROK_MODELS[harper_model]["label"],     "#00d4ff",
+        lambda: GROK_MODELS[harper_model],    None),
+    (lambda: enable_benjamin, "Benjamin", agent_benjamin, "🧠",
+        lambda: f"{CLAUDE_MODELS[benjamin_model]['label']} · {benjamin_effort}", "#ff6b9d",
+        lambda: CLAUDE_MODELS[benjamin_model], lambda: benjamin_effort),
+    (lambda: enable_aria,     "Aria",     agent_aria,     "⚖️",
+        lambda: f"{CLAUDE_MODELS[aria_model]['label']} · {aria_effort}",         "#ff9d6b",
+        lambda: CLAUDE_MODELS[aria_model],     lambda: aria_effort),
+    (lambda: enable_lucas,    "Lucas",    agent_lucas,    "🎨",
+        lambda: f"{GPT_MODELS[lucas_model]['label']} · {lucas_effort}",          "#ffd93d",
+        lambda: GPT_MODELS[lucas_model],       lambda: lucas_effort),
+    (lambda: enable_sage,     "Sage",     agent_sage,     "📚",
+        lambda: f"{GEMINI_MODELS[sage_model]['label']} · {sage_thinking}",       "#9d4edd",
+        lambda: GEMINI_MODELS[sage_model],     lambda: sage_thinking),
+    (lambda: enable_kai,      "Kai",      agent_kai,      "⚡",
+        lambda: KIMI_MODELS[kai_model]["label"],         "#06ffa5",
+        lambda: KIMI_MODELS[kai_model],        None),
 ]
 
 
@@ -425,39 +391,32 @@ def active_agents():
 
 
 # ============================================================
-# ESTIMADOR DE CUSTO
+# CUSTO
 # ============================================================
 
 def estimate_cost(agents, captain_pricing, captain_eff):
-    """Estima custo. Assume ~2k input tokens e output baseado no effort."""
-    INPUT_TOKENS = 2000   # pergunta + system prompt
-    INPUT_DEBATE = 8000   # crítica vê todos os outputs
-
+    INPUT_TOKENS = 2000
+    INPUT_DEBATE = 8000
     total = 0.0
     breakdown = []
 
-    # Cada agente: 2 chamadas (inicial + crítica)
-    for name, _, emoji, label_fn, _, pricing_fn, effort_fn in agents:
+    for name, _, emoji, _, _, pricing_fn, effort_fn in agents:
         pricing = pricing_fn()
         effort = effort_fn() if effort_fn else "medium"
         mult = EFFORT_MULTIPLIERS.get(effort, 2.0)
-        out_tokens_per_call = 1500 * mult  # output estimate
-        # Chamada 1 (inicial)
-        cost_1 = (INPUT_TOKENS * pricing["in"] + out_tokens_per_call * pricing["out"]) / 1_000_000
-        # Chamada 2 (crítica)
-        cost_2 = (INPUT_DEBATE * pricing["in"] + out_tokens_per_call * pricing["out"]) / 1_000_000
+        out = 1500 * mult
+        cost_1 = (INPUT_TOKENS * pricing["in"] + out * pricing["out"]) / 1_000_000
+        cost_2 = (INPUT_DEBATE * pricing["in"] + out * pricing["out"]) / 1_000_000
         agent_total = cost_1 + cost_2
         total += agent_total
         breakdown.append((f"{emoji} {name}", agent_total))
 
-    # Captain
-    captain_input = INPUT_DEBATE * 2  # vê inicial + crítica de todos
+    captain_input = INPUT_DEBATE * 2
     captain_mult = EFFORT_MULTIPLIERS.get(captain_eff, 2.0)
     captain_out = 2000 * captain_mult
     captain_cost = (captain_input * captain_pricing["in"] + captain_out * captain_pricing["out"]) / 1_000_000
     total += captain_cost
     breakdown.append(("🎯 Captain", captain_cost))
-
     return total, breakdown
 
 
@@ -472,8 +431,8 @@ def build_critique_prompt(agent_name, question, all_outputs):
     return (
         f"PERGUNTA ORIGINAL:\n{question}\n\n"
         f"RESPOSTAS DOS OUTROS AGENTES:\n{others}\n\n"
-        f"Você é {agent_name}. Identifique erros, contradições ou pontos fracos "
-        f"nas respostas dos outros. Refine sua posição. Seja direto."
+        f"Você é {agent_name}. Identifique erros, contradições ou pontos fracos. "
+        f"Refine sua posição. Seja direto."
     )
 
 
@@ -491,13 +450,15 @@ async def captain_synthesize(question, initial, critiques, clients, agents_meta)
         "model": captain_model,
         "max_tokens": 64000 if captain_effort in ("xhigh", "max") else 32000,
         "system": (
-            f"Você é o Captain. Integre as perspectivas dos agentes ({agent_list}). "
-            "Resolva contradições, descarte argumentos fracos, tome posição clara. "
-            "Use markdown com seções. Responda em pt-BR."
+            f"Você é o Captain. Integre as perspectivas dos agentes ({agent_list}) "
+            "que debateram em duas rodadas. Resolva contradições explicitamente, "
+            "descarte argumentos fracos, tome posição clara. "
+            "Estruture em markdown: TL;DR no topo, depois análise, depois recomendação. "
+            "Responda em pt-BR."
         ),
         "messages": [{
             "role": "user",
-            "content": f"PERGUNTA:\n{question}\n\nDEBATE:{debate}\n\nProduza a resposta final."
+            "content": f"PERGUNTA:\n{question}\n\nDEBATE:{debate}\n\nProduza a resposta final integrada."
         }],
     }
     if captain_model == "claude-opus-4-7":
@@ -507,45 +468,43 @@ async def captain_synthesize(question, initial, critiques, clients, agents_meta)
         kwargs["thinking"] = {"type": "adaptive"}
         kwargs["output_config"] = {"effort": captain_effort}
 
-    resp = await clients["anthropic"].messages.create(**kwargs)
     text, thinking = "", ""
-    for block in resp.content:
-        if block.type == "thinking":
-            thinking = block.thinking or ""
-        elif block.type == "text":
-            text = block.text
+    async with clients["anthropic"].messages.stream(**kwargs) as stream:
+        final = await stream.get_final_message()
+        for block in final.content:
+            if block.type == "thinking":
+                thinking = (block.thinking or "") if hasattr(block, "thinking") else ""
+            elif block.type == "text":
+                text = block.text
     return {"text": text, "thinking": thinking}
 
 
 # ============================================================
-# ORQUESTRAÇÃO
+# ORQUESTRAÇÃO — UI focada na resposta final
 # ============================================================
 
 async def run_council(question, ui_slots, agents):
     clients = get_clients()
     n = len(agents)
-
-    ui_slots["status"].info(f"⚡ **Fase 1/3** — {n} agentes em paralelo...")
     t0 = time.time()
 
+    # ── Fase 1 ──
+    ui_slots["status"].info(f"💭 **Fase 1/3** — {n} agentes pensando em paralelo... (pode demorar alguns minutos)")
     results_1 = await asyncio.gather(
         *[fn(question, clients) for _, fn, _, _, _, _, _ in agents],
         return_exceptions=True
     )
     initial = {}
+    errors = []
     for (name, _, _, _, _, _, _), r in zip(agents, results_1):
-        initial[name] = r if not isinstance(r, Exception) else {"text": f"⚠️ {r}", "thinking": None}
+        if isinstance(r, Exception):
+            initial[name] = {"text": f"⚠️ Erro: {type(r).__name__}: {str(r)[:300]}", "thinking": None}
+            errors.append((name, str(r)))
+        else:
+            initial[name] = r
+    ui_slots["status"].info(f"💬 **Fase 2/3** — Agentes se criticando mutuamente... ({time.time()-t0:.0f}s)")
 
-    for (name, _, emoji, label_fn, _, _, _), col in zip(agents, ui_slots["cols"]):
-        with col:
-            with st.expander(f"{emoji} **{name}** · {label_fn()}", expanded=True):
-                if initial[name].get("thinking"):
-                    with st.expander("💭 thinking"):
-                        st.caption(initial[name]["thinking"][:4000])
-                st.markdown(initial[name]["text"])
-
-    ui_slots["status"].info(f"⚡ **Fase 2/3** — Crítica cruzada... ({time.time()-t0:.1f}s)")
-
+    # ── Fase 2: crítica ──
     results_2 = await asyncio.gather(
         *[fn(build_critique_prompt(name, question, initial), clients)
           for name, fn, _, _, _, _, _ in agents],
@@ -553,57 +512,83 @@ async def run_council(question, ui_slots, agents):
     )
     critiques = {}
     for (name, _, _, _, _, _, _), r in zip(agents, results_2):
-        critiques[name] = r if not isinstance(r, Exception) else {"text": f"⚠️ {r}", "thinking": None}
+        if isinstance(r, Exception):
+            critiques[name] = {"text": f"⚠️ Erro: {type(r).__name__}: {str(r)[:300]}", "thinking": None}
+        else:
+            critiques[name] = r
 
-    for (name, _, emoji, _, _, _, _), col in zip(agents, ui_slots["cols"]):
-        with col:
-            with st.expander(f"{emoji} {name} — refinamento"):
-                st.markdown(critiques[name]["text"])
-
-    ui_slots["status"].info(f"⚡ **Fase 3/3** — Captain ({captain_effort})... ({time.time()-t0:.1f}s)")
+    # ── Fase 3: Captain ──
+    ui_slots["status"].info(f"🎯 **Fase 3/3** — Captain compilando resposta final... ({time.time()-t0:.0f}s)")
     final = await captain_synthesize(question, initial, critiques, clients, agents)
 
-    ui_slots["status"].success(f"✅ {time.time()-t0:.1f}s · {n} agentes")
+    elapsed = time.time() - t0
+    ui_slots["status"].empty()
 
+    # ── RESPOSTA FINAL EM DESTAQUE ──
     with ui_slots["final"]:
         st.markdown('<div class="captain-card">', unsafe_allow_html=True)
-        st.markdown("### 🎯 Resposta Final do Conselho")
-        if final.get("thinking"):
-            with st.expander("💭 thinking do Captain"):
-                st.caption(final["thinking"][:8000])
+        meta = f"⏱️ {elapsed:.0f}s · 🤖 {n} agentes · 2 rodadas de debate"
+        if errors:
+            meta += f" · ⚠️ {len(errors)} agente(s) com erro"
+        st.caption(meta)
+        st.markdown("## 🎯 Resposta do Conselho")
         st.markdown(final["text"])
+
+        if final.get("thinking"):
+            with st.expander("💭 Raciocínio do Captain"):
+                st.caption(final["thinking"][:8000])
+
         st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── DEBATE COMPLETO (oculto por padrão) ──
+    with ui_slots["debate"]:
+        with st.expander(f"🎭 Ver o debate completo ({n} agentes, 2 rodadas)", expanded=False):
+            st.caption("As respostas individuais e os refinamentos após a crítica cruzada.")
+            st.divider()
+
+            for name, _, emoji, label_fn, color, _, _ in agents:
+                st.markdown(
+                    f"<div style='border-left: 4px solid {color}; padding: 8px 16px; margin: 12px 0;'>"
+                    f"<b>{emoji} {name}</b> · <span style='opacity:0.7'>{label_fn()}</span></div>",
+                    unsafe_allow_html=True
+                )
+                tab1, tab2 = st.tabs(["📝 Resposta inicial", "🔄 Refinamento após debate"])
+                with tab1:
+                    if initial[name].get("thinking"):
+                        with st.expander("💭 thinking"):
+                            st.caption(initial[name]["thinking"][:4000])
+                    st.markdown(initial[name]["text"])
+                with tab2:
+                    st.markdown(critiques[name]["text"])
+                st.divider()
 
 
 # ============================================================
-# UI
+# UI PRINCIPAL
 # ============================================================
 
 agents = active_agents()
 
 st.markdown(f"""
 <div class="main-header">
-    <h1>🧠 Conselho Multi-Agente v4</h1>
-    <p>{len(agents)} agentes ativos · controle total · estimador de custo</p>
+    <h1>🧠 Conselho Multi-Agente</h1>
+    <p>{len(agents)} agentes · debate paralelo + crítica cruzada + síntese final</p>
 </div>
 """, unsafe_allow_html=True)
 
-# Estimador de custo
+# Estimador
 if len(agents) >= 2:
     cost, breakdown = estimate_cost(agents, CLAUDE_MODELS[captain_model], captain_effort)
     cost_low = cost * 0.4
     cost_high = cost * 2.5
-
     color = "#22c55e" if cost < 0.5 else "#f59e0b" if cost < 2.0 else "#ef4444"
-
     st.markdown(f"""
-    <div class="cost-card" style="border-color: {color}; background: {color}15;">
-        <b style="color:{color}">💰 Custo estimado: ${cost_low:.2f} – ${cost_high:.2f} por pergunta</b><br>
-        <small style="opacity:0.8">Estimativa central: ${cost:.2f} · varia conforme tamanho da pergunta e thinking real</small>
+    <div class="cost-card" style="border: 1px solid {color}; background: {color}15;">
+        <b style="color:{color}">💰 Custo estimado: ${cost_low:.2f} – ${cost_high:.2f} por pergunta</b>
+        <small style="opacity:0.7"> · estimativa central ${cost:.2f}</small>
     </div>
     """, unsafe_allow_html=True)
-
-    with st.expander("Ver breakdown por agente"):
+    with st.expander("Breakdown por agente"):
         for name, c in breakdown:
             st.write(f"{name}: ${c:.3f}")
 
@@ -622,18 +607,16 @@ else:
             )
 
 st.write("")
-question = st.text_area(
-    "Sua pergunta:",
-    placeholder="Ex: Qual a melhor arquitetura pra integrar HubSpot, Salesforce e NetSuite?",
-    height=100,
-)
+question = st.text_area("Sua pergunta:",
+    placeholder="Ex: Qual a melhor arquitetura pra sincronizar HubSpot, Salesforce e NetSuite?",
+    height=100)
 
 col_a, _ = st.columns([1, 4])
 with col_a:
     go = st.button("🚀 Convocar conselho", type="primary",
                    use_container_width=True, disabled=len(agents) < 2)
 
-# Validação keys
+# Validação
 missing = []
 if not anthropic_key: missing.append("Anthropic")
 if enable_harper and not xai_key: missing.append("xAI")
@@ -641,16 +624,16 @@ if enable_lucas and not openai_key: missing.append("OpenAI")
 if enable_sage and not gemini_key: missing.append("Google")
 if enable_kai and not kimi_key: missing.append("Moonshot")
 if enable_sage and not GEMINI_AVAILABLE:
-    st.error("⚠️ Gemini ativo mas falta lib. Adiciona `google-genai>=0.5` no requirements.txt")
+    st.error("⚠️ Gemini ativo mas falta lib (`google-genai>=0.5` no requirements.txt)")
 
 if go and question:
     if missing:
         st.error(f"⚠️ Faltam keys: {', '.join(set(missing))}")
     else:
         status_slot = st.empty()
-        cols = st.columns(len(agents))
         final_slot = st.empty()
-        ui_slots = {"status": status_slot, "cols": cols, "final": final_slot}
+        debate_slot = st.empty()
+        ui_slots = {"status": status_slot, "final": final_slot, "debate": debate_slot}
         try:
             asyncio.run(run_council(question, ui_slots, agents))
         except Exception as e:
